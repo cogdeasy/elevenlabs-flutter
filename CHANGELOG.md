@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-14
+
+### Added
+
+- Text-only and listen-only conversation modes via the new `sessionMode` parameter on `startSession()` (`ConversationSessionMode.voice` / `.listenOnly` / `.textOnly`). In non-voice modes no local audio publisher is created, so no microphone permission is requested; in `textOnly` mode the SDK also sends the `text_only` conversation override so the agent responds with text instead of audio.
+- `onAgentAudioLevel` and `onUserAudioLevel` callbacks on `ConversationCallbacks`, providing real-time audio levels (0-1) for waveform/visualization UIs. Adapted from upstream PR #34.
+- `ConversationTransport` interface abstracting the realtime transport. `ConversationClient` now accepts injectable `transport` and `tokenService` constructor parameters, making conversation logic unit-testable with a fake transport (no LiveKit connection required).
+
+### Changed
+
+- `MessageHandler` and `MessageSender` now operate on `ConversationTransport` instead of `LiveKitManager` directly (the `MessageHandler` constructor parameter `liveKit` was renamed to `transport`).
+- `LiveKitManager.stateStream` now emits `TransportConnectionState` instead of the LiveKit `ConnectionState`.
+- CI now uses `subosito/flutter-action`, and additionally runs a `pana` package score check and builds the example app.
+
 ## [0.6.1] - 2026-06-01
 
 ### Fixed
@@ -100,6 +114,7 @@ Re-release of 0.5.0 with the version correctly bumped in package source files.
 - iOS 13.0+
 - Android API 21+
 
+[0.7.0]: https://github.com/cogdeasy/elevenlabs-flutter/releases/tag/v0.7.0
 [0.6.1]: https://github.com/elevenlabs/elevenlabs-flutter/releases/tag/v0.6.1
 [0.6.0]: https://github.com/elevenlabs/elevenlabs-flutter/releases/tag/v0.6.0
 [0.5.1]: https://github.com/elevenlabs/elevenlabs-flutter/releases/tag/v0.5.1

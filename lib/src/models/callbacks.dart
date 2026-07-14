@@ -81,6 +81,16 @@ class ConversationCallbacks {
   /// Called when a tentative agent response is received (streaming text)
   final void Function({required String response})? onTentativeAgentResponse;
 
+  /// Called with the agent's real-time audio level (0-1).
+  /// Emitted whenever active speakers change; 0 when the agent is silent.
+  /// Use this to power visualizations like waveforms or pulsing orbs.
+  final void Function({required double audioLevel})? onAgentAudioLevel;
+
+  /// Called with the local user's audio level (0-1), sampled at 20Hz from
+  /// the local participant. Useful for spectrum/waveform visualizations of
+  /// the user speaking. Not emitted in text-only or listen-only sessions.
+  final void Function({required double audioLevel})? onUserAudioLevel;
+
   const ConversationCallbacks({
     this.onConnect,
     this.onDisconnect,
@@ -106,5 +116,7 @@ class ConversationCallbacks {
     this.onUserTranscript,
     this.onAgentResponseCorrection,
     this.onTentativeAgentResponse,
+    this.onAgentAudioLevel,
+    this.onUserAudioLevel,
   });
 }

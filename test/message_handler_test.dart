@@ -1,28 +1,22 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:elevenlabs_agents/elevenlabs_agents.dart';
-import 'package:elevenlabs_agents/src/connection/livekit_manager.dart';
 import 'package:elevenlabs_agents/src/messaging/message_handler.dart';
 
-/// Minimal fake LiveKitManager that feeds test messages into the handler
-/// without requiring a real LiveKit Room.
-class _FakeLiveKitManager extends LiveKitManager {
-  final _controller = StreamController<Map<String, dynamic>>.broadcast();
-  final List<Map<String, dynamic>> sentMessages = [];
+import 'helpers/fake_transport.dart';
 
-  @override
-  Stream<Map<String, dynamic>> get dataStream => _controller.stream;
+/// Minimal fake transport that feeds test messages into the handler
+/// without requiring a real LiveKit Room.
+class _FakeTransport extends FakeConversationTransport {
+  void inject(Map<String, dynamic> message) => emitData(message);
+
+  Future<void> close() => dispose();
 
   @override
   Future<void> sendMessage(Map<String, dynamic> message) async {
     sentMessages.add(message);
   }
-
-  void inject(Map<String, dynamic> message) => _controller.add(message);
-
-  void close() => _controller.close();
 }
 
 void main() {
@@ -33,7 +27,7 @@ void main() {
       String? receivedToolName;
       String? receivedToolCallId;
 
-      final fakeManager = _FakeLiveKitManager();
+      final fakeManager = _FakeTransport();
       final handler = MessageHandler(
         callbacks: ConversationCallbacks(
           onAgentToolRequest: ({required toolName, required toolCallId}) {
@@ -41,7 +35,7 @@ void main() {
             receivedToolCallId = toolCallId;
           },
         ),
-        liveKit: fakeManager,
+        transport: fakeManager,
       );
 
       handler.startListening();
@@ -65,10 +59,10 @@ void main() {
     });
 
     test('does not send a client_tool_result for webhook tool type', () async {
-      final fakeManager = _FakeLiveKitManager();
+      final fakeManager = _FakeTransport();
       final handler = MessageHandler(
         callbacks: const ConversationCallbacks(),
-        liveKit: fakeManager,
+        transport: fakeManager,
       );
 
       handler.startListening();
@@ -93,12 +87,12 @@ void main() {
 
   group('MessageHandler - agent_tool_request (client tool)', () {
     test('executes registered client tool and sends result', () async {
-      final fakeManager = _FakeLiveKitManager();
+      final fakeManager = _FakeTransport();
       final tool = _EchoTool();
 
       final handler = MessageHandler(
         callbacks: const ConversationCallbacks(),
-        liveKit: fakeManager,
+        transport: fakeManager,
         clientTools: {'echo': tool},
       );
 
@@ -135,14 +129,14 @@ void main() {
         () async {
       String? receivedToolName;
 
-      final fakeManager = _FakeLiveKitManager();
+      final fakeManager = _FakeTransport();
       final handler = MessageHandler(
         callbacks: ConversationCallbacks(
           onAgentToolRequest: ({required toolName, required toolCallId}) {
             receivedToolName = toolName;
           },
         ),
-        liveKit: fakeManager,
+        transport: fakeManager,
         clientTools: {'echo': _EchoTool()},
       );
 
@@ -169,14 +163,14 @@ void main() {
         () async {
       ClientToolCall? unhandled;
 
-      final fakeManager = _FakeLiveKitManager();
+      final fakeManager = _FakeTransport();
       final handler = MessageHandler(
         callbacks: ConversationCallbacks(
           onUnhandledClientToolCall: (toolCall) {
             unhandled = toolCall;
           },
         ),
-        liveKit: fakeManager,
+        transport: fakeManager,
       );
 
       handler.startListening();
@@ -203,10 +197,10 @@ void main() {
     });
 
     test('does not send result when client tool returns null', () async {
-      final fakeManager = _FakeLiveKitManager();
+      final fakeManager = _FakeTransport();
       final handler = MessageHandler(
         callbacks: const ConversationCallbacks(),
-        liveKit: fakeManager,
+        transport: fakeManager,
         clientTools: {'fire_forget': _FireForgetTool()},
       );
 
@@ -234,12 +228,12 @@ void main() {
     test('calls onDebug with the raw JSON', () async {
       dynamic debugData;
 
-      final fakeManager = _FakeLiveKitManager();
+      final fakeManager = _FakeTransport();
       final handler = MessageHandler(
         callbacks: ConversationCallbacks(
           onDebug: (data) => debugData = data,
         ),
-        liveKit: fakeManager,
+        transport: fakeManager,
       );
 
       handler.startListening();

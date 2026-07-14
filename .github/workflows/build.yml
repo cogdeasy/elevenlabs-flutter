@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  FLUTTER_VERSION: 3.41.7
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -14,21 +17,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Cache Flutter SDK
-        uses: actions/cache@v4
-        with:
-          path: /opt/flutter
-          key: ${{ runner.os }}-flutter-3.41.7
-          restore-keys: |
-            ${{ runner.os }}-flutter-
-
       - name: Install Flutter
-        run: |
-          if [ ! -d "/opt/flutter" ]; then
-            git clone https://github.com/flutter/flutter.git -b 3.41.7 --depth 1 /opt/flutter
-          fi
-          echo "/opt/flutter/bin" >> $GITHUB_PATH
-          echo "/opt/flutter/bin/cache/dart-sdk/bin" >> $GITHUB_PATH
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
 
       - name: Flutter doctor
         run: |
@@ -83,3 +77,53 @@ jobs:
         with:
           files: ./coverage/lcov.info
           fail_ci_if_error: false
+
+  pana:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install pana
+        run: dart pub global activate pana
+
+      - name: Run pana score check
+        # Fail if the package scores more than 40 points below the maximum
+        run: dart pub global run pana --no-warning --exit-code-threshold 40 .
+
+  build-example:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Create .env for example
+        run: touch example/.env
+
+      - name: Build example app (Android)
+        working-directory: example
+        run: |
+          flutter pub get
+          flutter build apk --debug

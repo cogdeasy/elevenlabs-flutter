@@ -295,6 +295,31 @@ await client.startSession(
 );
 ```
 
+### Text-Only and Listen-Only Sessions
+
+By default, sessions are full voice conversations. Use the `sessionMode`
+parameter to start sessions that never publish the microphone (and therefore
+never request microphone permission):
+
+```dart
+// Pure text chat: agent responds with text instead of audio
+await client.startSession(
+  agentId: 'your-agent-id',
+  sessionMode: ConversationSessionMode.textOnly,
+);
+client.sendUserMessage('Hello!');
+
+// Listen-only: agent audio plays, but the user interacts via text
+await client.startSession(
+  agentId: 'your-agent-id',
+  sessionMode: ConversationSessionMode.listenOnly,
+);
+```
+
+In `textOnly` mode the SDK automatically sends the `text_only` conversation
+override, so agent responses arrive through `onMessage` /
+`onAgentChatResponsePart` instead of audio.
+
 ### Sending Messages
 
 Send text messages and contextual updates during a conversation:
@@ -618,6 +643,7 @@ ConversationClient({
 | `isMuted` | `bool` | Whether the microphone is muted |
 | `conversationId` | `String?` | Unique identifier for the active conversation |
 | `canSendFeedback` | `bool` | Whether feedback can be sent for the last response |
+| `sessionMode` | `ConversationSessionMode` | Session mode of the current (or most recent) session |
 
 #### Methods
 
@@ -643,6 +669,7 @@ ConversationClient({
 | `overrides` | `ConversationOverrides?` | No | Session-specific configuration |
 | `customLlmExtraBody` | `Map<String, dynamic>?` | No | Custom LLM parameters |
 | `dynamicVariables` | `Map<String, dynamic>?` | No | Runtime variables for prompts |
+| `sessionMode` | `ConversationSessionMode` | No | `voice` (default), `listenOnly`, or `textOnly` |
 
 \* Either `agentId` or `conversationToken` must be provided
 
@@ -659,6 +686,12 @@ ConversationClient({
 
 - `listening` - Agent is listening to user
 - `speaking` - Agent is speaking
+
+#### ConversationSessionMode
+
+- `voice` - Full voice conversation (default); microphone is published
+- `listenOnly` - Agent audio plays but the microphone is never published
+- `textOnly` - Pure text chat; no microphone, and the `text_only` override is sent
 
 #### Role
 

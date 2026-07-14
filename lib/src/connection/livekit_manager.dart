@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:livekit_client/livekit_client.dart';
+import 'conversation_transport.dart';
 
 /// Manages LiveKit Room connection and audio tracks
-class LiveKitManager {
+class LiveKitManager implements ConversationTransport {
   Room? _room;
   EventsListener<RoomEvent>? _eventsListener;
   Timer? _speakingDebounceTimer;
@@ -14,36 +15,64 @@ class LiveKitManager {
       StreamController<Map<String, dynamic>>.broadcast();
 
   /// Stream of incoming data messages
+  @override
   Stream<Map<String, dynamic>> get dataStream => _dataStreamController.stream;
 
   /// Stream controller for connection state changes
-  final _stateStreamController = StreamController<ConnectionState>.broadcast();
+  final _stateStreamController =
+      StreamController<TransportConnectionState>.broadcast();
 
   /// Stream of connection state changes
-  Stream<ConnectionState> get stateStream => _stateStreamController.stream;
+  @override
+  Stream<TransportConnectionState> get stateStream =>
+      _stateStreamController.stream;
 
   /// Stream controller for disconnect events with reasons
   final _disconnectStreamController = StreamController<String>.broadcast();
 
   /// Stream of disconnect events with reasons ('agent', 'user', or 'error')
+  @override
   Stream<String> get disconnectStream => _disconnectStreamController.stream;
 
   /// Stream controller for room ready event (connected + local participant published)
   final _roomReadyController = StreamController<void>.broadcast();
 
   /// Stream that emits when the room is fully ready to send messages
+  @override
   Stream<void> get roomReadyStream => _roomReadyController.stream;
 
   /// Stream controller for agent speaking state
   final _speakingStateController = StreamController<bool>.broadcast();
 
   /// Stream that emits when agent starts/stops speaking
+  @override
   Stream<bool> get speakingStateStream => _speakingStateController.stream;
+
+  /// Stream controller for agent audio level (0-1, real-time from LiveKit)
+  final _agentAudioLevelController = StreamController<double>.broadcast();
+
+  /// Stream of agent audio level (0-1). Emits whenever active speakers change,
+  /// reflecting the real loudness of the remote agent participant.
+  @override
+  Stream<double> get agentAudioLevelStream => _agentAudioLevelController.stream;
+
+  /// Stream controller for the local user audio level (0-1)
+  final _userAudioLevelController = StreamController<double>.broadcast();
+
+  /// Stream of the local user audio level (0-1), sampled every 50ms from
+  /// `room.localParticipant.audioLevel`. Useful for "you are speaking"
+  /// visualizations.
+  @override
+  Stream<double> get userAudioLevelStream => _userAudioLevelController.stream;
+
+  /// Polling timer for local participant audio level
+  Timer? _userLevelPollTimer;
 
   /// Current room instance
   Room? get room => _room;
 
   /// Whether the microphone is muted
+  @override
   bool get isMuted =>
       !(_room?.localParticipant?.isMicrophoneEnabled() ?? false);
 
@@ -66,8 +95,17 @@ class LiveKitManager {
     }
   }
 
-  /// Connects to a LiveKit server
-  Future<void> connect(String serverUrl, String token) async {
+  /// Connects to a LiveKit server.
+  ///
+  /// When [enableMicrophone] is false, no local audio publisher is created
+  /// and no microphone permission is requested (text-only / listen-only
+  /// sessions).
+  @override
+  Future<void> connect(
+    String serverUrl,
+    String token, {
+    bool enableMicrophone = true,
+  }) async {
     try {
       // Clean up any existing connection
       await disconnect();
@@ -86,17 +124,23 @@ class LiveKitManager {
 
       _eventsListener!
         ..on<RoomConnectedEvent>((event) {
-          _safeAdd(_stateStreamController, ConnectionState.connected);
+          _safeAdd(_stateStreamController, TransportConnectionState.connected);
         })
         ..on<RoomDisconnectedEvent>((event) {
-          _safeAdd(_stateStreamController, ConnectionState.disconnected);
+          _safeAdd(
+            _stateStreamController,
+            TransportConnectionState.disconnected,
+          );
           _safeAdd(_disconnectStreamController, 'error');
         })
         ..on<RoomReconnectingEvent>((event) {
-          _safeAdd(_stateStreamController, ConnectionState.reconnecting);
+          _safeAdd(
+            _stateStreamController,
+            TransportConnectionState.reconnecting,
+          );
         })
         ..on<RoomReconnectedEvent>((event) {
-          _safeAdd(_stateStreamController, ConnectionState.connected);
+          _safeAdd(_stateStreamController, TransportConnectionState.connected);
         })
         ..on<DataReceivedEvent>((event) {
           // Handle incoming data messages
@@ -119,7 +163,10 @@ class LiveKitManager {
         ..on<ParticipantDisconnectedEvent>((event) {
           // If the agent disconnects, we should end the session
           if (event.participant.identity.startsWith('agent-')) {
-            _safeAdd(_stateStreamController, ConnectionState.disconnected);
+            _safeAdd(
+              _stateStreamController,
+              TransportConnectionState.disconnected,
+            );
             _safeAdd(_disconnectStreamController, 'agent');
           }
         })
@@ -137,11 +184,18 @@ class LiveKitManager {
           }
         })
         ..on<ActiveSpeakersChangedEvent>((event) {
-          // Check if agent is in the active speakers list
-          final agentIsSpeaking = event.speakers.any(
-            (speaker) => speaker.identity.startsWith('agent-'),
-          );
-          _handleSpeakingStateChange(agentIsSpeaking);
+          // Find the agent in the active speakers list
+          Participant? agentSpeaker;
+          for (final speaker in event.speakers) {
+            if (speaker.identity.startsWith('agent-')) {
+              agentSpeaker = speaker;
+              break;
+            }
+          }
+          _handleSpeakingStateChange(agentSpeaker != null);
+
+          // Emit real-time audio level (0 when agent isn't speaking)
+          _safeAdd(_agentAudioLevelController, agentSpeaker?.audioLevel ?? 0.0);
         });
 
       // Connect to LiveKit server
@@ -157,15 +211,29 @@ class LiveKitManager {
         );
       }
 
-      // Enable microphone (LiveKit handles track creation automatically)
-      await _room!.localParticipant?.setMicrophoneEnabled(
-        true,
-        audioCaptureOptions: const AudioCaptureOptions(
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        ),
-      );
+      if (enableMicrophone) {
+        // Enable microphone (LiveKit handles track creation automatically)
+        await _room!.localParticipant?.setMicrophoneEnabled(
+          true,
+          audioCaptureOptions: const AudioCaptureOptions(
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          ),
+        );
+
+        // Poll local participant audio level for user visualizations.
+        // LiveKit updates `audioLevel` on the participant via internal
+        // events but does not expose a Stream<double>, so we sample at
+        // 50ms (20Hz).
+        _userLevelPollTimer?.cancel();
+        _userLevelPollTimer =
+            Timer.periodic(const Duration(milliseconds: 50), (_) {
+          final localParticipant = _room?.localParticipant;
+          if (localParticipant == null) return;
+          _safeAdd(_userAudioLevelController, localParticipant.audioLevel);
+        });
+      }
 
       // Emit room ready event - connection is fully established and ready for messages
       _safeAdd(_roomReadyController, null);
@@ -179,6 +247,7 @@ class LiveKitManager {
   }
 
   /// Sends a data message to the room
+  @override
   Future<void> sendMessage(Map<String, dynamic> message) async {
     final currentRoom = _room;
     if (currentRoom == null) {
@@ -200,11 +269,13 @@ class LiveKitManager {
   }
 
   /// Sets the microphone mute state
+  @override
   Future<void> setMicMuted(bool muted) async {
     await _room?.localParticipant?.setMicrophoneEnabled(!muted);
   }
 
   /// Toggles the microphone mute state
+  @override
   Future<void> toggleMute() async {
     final currentlyEnabled =
         _room?.localParticipant?.isMicrophoneEnabled() ?? false;
@@ -235,10 +306,13 @@ class LiveKitManager {
   }
 
   /// Disconnects from the LiveKit server and cleans up resources
+  @override
   Future<void> disconnect() async {
     // Cancel any pending debounce timer
     _speakingDebounceTimer?.cancel();
     _speakingDebounceTimer = null;
+    _userLevelPollTimer?.cancel();
+    _userLevelPollTimer = null;
     _lastSpeakingState = false;
 
     // Dispose of event listener first
@@ -279,6 +353,7 @@ class LiveKitManager {
   }
 
   /// Disposes of all resources
+  @override
   Future<void> dispose() async {
     // Tear down the room/listener BEFORE closing the controllers. Disconnecting
     // can emit a final RoomDisconnectedEvent and the disconnect path itself
@@ -291,5 +366,7 @@ class LiveKitManager {
     await _disconnectStreamController.close();
     await _roomReadyController.close();
     await _speakingStateController.close();
+    await _agentAudioLevelController.close();
+    await _userAudioLevelController.close();
   }
 }

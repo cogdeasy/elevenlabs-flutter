@@ -1,24 +1,24 @@
-import '../connection/livekit_manager.dart';
+import '../connection/conversation_transport.dart';
 
-/// Handles sending messages to the agent via LiveKit data channel
+/// Handles sending messages to the agent via the transport data channel
 class MessageSender {
-  final LiveKitManager liveKit;
+  final ConversationTransport transport;
 
-  MessageSender(this.liveKit);
+  MessageSender(this.transport);
 
   /// Sends a user text message to the agent
   Future<void> sendUserMessage(String text) async {
-    await liveKit.sendMessage({'type': 'user_message', 'text': text});
+    await transport.sendMessage({'type': 'user_message', 'text': text});
   }
 
   /// Sends a contextual update to the agent
   Future<void> sendContextualUpdate(String text) async {
-    await liveKit.sendMessage({'type': 'contextual_update', 'text': text});
+    await transport.sendMessage({'type': 'contextual_update', 'text': text});
   }
 
   /// Sends a user activity signal
   Future<void> sendUserActivity() async {
-    await liveKit.sendMessage({'type': 'user_activity'});
+    await transport.sendMessage({'type': 'user_activity'});
   }
 
   /// Sends feedback for the last agent response
@@ -26,7 +26,7 @@ class MessageSender {
     required bool isPositive,
     required int eventId,
   }) async {
-    await liveKit.sendMessage({
+    await transport.sendMessage({
       'type': 'feedback',
       'score': isPositive ? 'like' : 'dislike',
       'event_id': eventId,
@@ -38,7 +38,7 @@ class MessageSender {
     required String toolCallId,
     required Map<String, dynamic> result,
   }) async {
-    await liveKit.sendMessage({
+    await transport.sendMessage({
       'type': 'client_tool_result',
       'tool_call_id': toolCallId,
       'result': result,
