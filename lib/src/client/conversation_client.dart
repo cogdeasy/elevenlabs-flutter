@@ -385,7 +385,10 @@ class ConversationClient extends ChangeNotifier {
   }
 
   void _ensureConnected() {
-    if (_status != ConversationStatus.connected) {
+    // Sends are still attempted while reconnecting; failures surface
+    // asynchronously through the transport and onError callback.
+    if (_status != ConversationStatus.connected &&
+        _status != ConversationStatus.reconnecting) {
       throw StateError('Not connected to agent');
     }
   }

@@ -189,6 +189,30 @@ void main() {
       client.dispose();
     });
 
+    test('sends are still attempted while reconnecting', () async {
+      final transport = FakeConversationTransport();
+
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
+      );
+
+      await client.startSession(agentId: 'agent-1');
+      transport.emitState(TransportConnectionState.reconnecting);
+      await pump();
+      expect(client.status, ConversationStatus.reconnecting);
+
+      client.sendUserMessage('still there?');
+      await pump();
+      expect(
+        transport.sentMessages.last,
+        containsPair('type', 'user_message'),
+      );
+
+      await client.endSession();
+      client.dispose();
+    });
+
     test('reconnecting state after disconnect is ignored', () async {
       final transport = FakeConversationTransport();
 
