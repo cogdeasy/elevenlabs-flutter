@@ -121,6 +121,7 @@ class ConversationClient extends ChangeNotifier {
       onUnhandledClientToolCall: callbacks?.onUnhandledClientToolCall,
       onMcpToolCall: callbacks?.onMcpToolCall,
       onMcpConnectionStatus: callbacks?.onMcpConnectionStatus,
+      onAgentToolRequest: callbacks?.onAgentToolRequest,
       onAgentToolResponse: callbacks?.onAgentToolResponse,
       onDebug: callbacks?.onDebug,
       onEndCallRequested: () {
@@ -201,6 +202,20 @@ class ConversationClient extends ChangeNotifier {
         _handleDisconnection(reason);
       });
 
+      // Listen to transport connection state for reconnect reporting.
+      // Initial connect/disconnect status is driven by startSession/endSession
+      // and the disconnect stream; this only reports drops and recoveries of
+      // an established session.
+      _stateSubscription = _transport.stateStream.listen((state) {
+        if (state == TransportConnectionState.reconnecting &&
+            _status == ConversationStatus.connected) {
+          _setStatus(ConversationStatus.reconnecting);
+        } else if (state == TransportConnectionState.connected &&
+            _status == ConversationStatus.reconnecting) {
+          _setStatus(ConversationStatus.connected);
+        }
+      });
+
       // Listen to agent speaking state from the transport
       _speakingSubscription = _transport.speakingStateStream.listen((
         isSpeaking,
@@ -256,6 +271,9 @@ class ConversationClient extends ChangeNotifier {
 
       _setStatus(ConversationStatus.connected);
     } catch (e) {
+      await _cancelSubscriptions();
+      _messageHandler.stopListening();
+      await _transport.disconnect();
       _setStatus(ConversationStatus.disconnected);
       _callbacks?.onError?.call('Failed to start session', e);
       rethrow;
@@ -367,7 +385,10 @@ class ConversationClient extends ChangeNotifier {
   }
 
   void _ensureConnected() {
-    if (_status != ConversationStatus.connected) {
+    // Sends are still attempted while reconnecting; failures surface
+    // asynchronously through the transport and onError callback.
+    if (_status != ConversationStatus.connected &&
+        _status != ConversationStatus.reconnecting) {
       throw StateError('Not connected to agent');
     }
   }
@@ -432,7 +453,7 @@ class ConversationClient extends ChangeNotifier {
     );
   }
 
-  Future<void> _cleanup() async {
+  Future<void> _cancelSubscriptions() async {
     await _stateSubscription?.cancel();
     _stateSubscription = null;
 
@@ -447,6 +468,10 @@ class ConversationClient extends ChangeNotifier {
 
     await _disconnectSubscription?.cancel();
     _disconnectSubscription = null;
+  }
+
+  Future<void> _cleanup() async {
+    await _cancelSubscriptions();
 
     _messageHandler.stopListening();
     await _transport.disconnect();

@@ -1,18 +1,39 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:elevenlabs_agents/elevenlabs_agents.dart';
-import 'helpers/testable_client.dart';
+import 'helpers/fake_transport.dart';
 
+/// Happy-path tests exercising the real [ConversationClient] against
+/// [FakeConversationTransport] / [FakeTokenService] — no LiveKit or HTTP.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  Future<void> pump() => Future<void>.delayed(Duration.zero);
+
+  void emitMetadata(
+    FakeConversationTransport transport, {
+    String conversationId = 'test-conversation-123',
+  }) {
+    transport.emitData({
+      'type': 'conversation_initiation_metadata',
+      'conversation_initiation_metadata_event': {
+        'conversation_id': conversationId,
+        'agent_output_audio_format': 'pcm_16000',
+        'user_input_audio_format': 'pcm_16000',
+      },
+    });
+  }
 
   group('Happy Path - Session Start with AgentId', () {
     test(
       'successfully starts session and transitions through states',
       () async {
+        final transport = FakeConversationTransport();
         final statuses = <ConversationStatus>[];
         String? connectedConversationId;
 
-        final client = TestableConversationClient(
+        final client = ConversationClient(
+          transport: transport,
+          tokenService: FakeTokenService(),
           callbacks: ConversationCallbacks(
             onStatusChange: ({required status}) {
               statuses.add(status);
@@ -33,6 +54,8 @@ void main() {
           agentId: 'test-agent-123',
           userId: 'user-456',
         );
+        emitMetadata(transport);
+        await pump();
 
         // Verify state transitions
         expect(statuses, [
@@ -54,7 +77,9 @@ void main() {
     test('successfully starts session with token', () async {
       final statuses = <ConversationStatus>[];
 
-      final client = TestableConversationClient(
+      final client = ConversationClient(
+        transport: FakeConversationTransport(),
+        tokenService: FakeTokenService(),
         callbacks: ConversationCallbacks(
           onStatusChange: ({required status}) {
             statuses.add(status);
@@ -81,9 +106,12 @@ void main() {
     });
 
     test('starts session with full configuration', () async {
+      final transport = FakeConversationTransport();
       final events = <String>[];
 
-      final client = TestableConversationClient(
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
         callbacks: ConversationCallbacks(
           onStatusChange: ({required status}) {
             events.add('status:${status.name}');
@@ -109,11 +137,21 @@ void main() {
         overrides: overrides,
         dynamicVariables: {'user_name': 'Alice', 'tier': 'premium'},
       );
+      emitMetadata(transport);
+      await pump();
 
       expect(events, contains('status:connecting'));
       expect(events, contains('status:connected'));
       expect(events, contains('connected:test-conversation-123'));
       expect(client.status, ConversationStatus.connected);
+
+      final sentOverrides = transport.sentMessages.first;
+      expect(sentOverrides['type'], 'conversation_initiation_client_data');
+      expect(sentOverrides['user_id'], 'user-123');
+      expect(
+        sentOverrides['dynamic_variables'],
+        {'user_name': 'Alice', 'tier': 'premium'},
+      );
 
       await client.endSession();
       client.dispose();
@@ -122,13 +160,12 @@ void main() {
 
   group('Happy Path - Messaging During Session', () {
     test('sends and receives messages while connected', () async {
+      final transport = FakeConversationTransport();
       final messages = <String>[];
-      final sentMessages = <Map<String, dynamic>>[];
 
-      final mockLiveKit = MockLiveKitManager();
-
-      final client = TestableConversationClient(
-        liveKitManager: mockLiveKit,
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
         callbacks: ConversationCallbacks(
           onMessage: ({required message, required source}) {
             messages.add('${source.name}:$message');
@@ -136,23 +173,26 @@ void main() {
         ),
       );
 
-      // Listen to sent messages
-      mockLiveKit.messagesStream.listen(sentMessages.add);
-
       await client.startSession(agentId: 'test-agent');
 
       // Send user message
       client.sendUserMessage('Hello, agent!');
+      await pump();
 
-      await Future.delayed(const Duration(milliseconds: 10));
-
-      expect(sentMessages, isNotEmpty);
-      expect(sentMessages.last['type'], 'user_message');
-      expect(sentMessages.last['text'], 'Hello, agent!');
-      expect(messages, contains('user:Hello, agent!'));
+      expect(
+        transport.sentMessages,
+        contains(equals({'type': 'user_message', 'text': 'Hello, agent!'})),
+      );
 
       // Simulate agent response
-      client.simulateAgentMessage('Hi! How can I help?');
+      transport.emitData({
+        'type': 'agent_response',
+        'agent_response_event': {
+          'agent_response': 'Hi! How can I help?',
+          'event_id': 1,
+        },
+      });
+      await pump();
       expect(messages, contains('ai:Hi! How can I help?'));
 
       await client.endSession();
@@ -160,64 +200,78 @@ void main() {
     });
 
     test('sends contextual updates', () async {
-      final sentMessages = <Map<String, dynamic>>[];
-      final mockLiveKit = MockLiveKitManager();
+      final transport = FakeConversationTransport();
 
-      final client = TestableConversationClient(liveKitManager: mockLiveKit);
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
+      );
 
-      mockLiveKit.messagesStream.listen(sentMessages.add);
       await client.startSession(conversationToken: 'test-token');
 
       client.sendContextualUpdate('User viewing product page');
+      await pump();
 
-      await Future.delayed(const Duration(milliseconds: 10));
-
-      expect(sentMessages.last['type'], 'contextual_update');
-      expect(sentMessages.last['text'], 'User viewing product page');
+      expect(
+        transport.sentMessages,
+        contains(equals({
+          'type': 'contextual_update',
+          'text': 'User viewing product page',
+        })),
+      );
 
       await client.endSession();
       client.dispose();
     });
 
     test('sends user activity signals', () async {
-      final sentMessages = <Map<String, dynamic>>[];
-      final mockLiveKit = MockLiveKitManager();
+      final transport = FakeConversationTransport();
 
-      final client = TestableConversationClient(liveKitManager: mockLiveKit);
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
+      );
 
-      mockLiveKit.messagesStream.listen(sentMessages.add);
       await client.startSession(conversationToken: 'test-token');
 
       client.sendUserActivity();
+      await pump();
 
-      await Future.delayed(const Duration(milliseconds: 10));
-
-      expect(sentMessages.last['type'], 'user_activity');
+      expect(
+        transport.sentMessages,
+        contains(equals({'type': 'user_activity'})),
+      );
 
       await client.endSession();
       client.dispose();
     });
 
     test('sends feedback when available', () async {
-      final sentMessages = <Map<String, dynamic>>[];
-      final mockLiveKit = MockLiveKitManager();
+      final transport = FakeConversationTransport();
 
-      final client = TestableConversationClient(liveKitManager: mockLiveKit);
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
+      );
 
-      mockLiveKit.messagesStream.listen(sentMessages.add);
       await client.startSession(conversationToken: 'test-token');
 
-      // Simulate feedback becoming available
-      client.simulateFeedbackAvailable();
+      // Feedback becomes available after an agent response with an event id
+      transport.emitData({
+        'type': 'agent_response',
+        'agent_response_event': {'agent_response': 'Hi', 'event_id': 5},
+      });
+      await pump();
       expect(client.canSendFeedback, true);
 
       // Send positive feedback
       client.sendFeedback(isPositive: true);
+      await pump();
 
-      await Future.delayed(const Duration(milliseconds: 10));
-
-      expect(sentMessages.last['type'], 'feedback');
-      expect(sentMessages.last['score'], 'like');
+      expect(
+        transport.sentMessages,
+        contains(equals({'type': 'feedback', 'score': 'like', 'event_id': 5})),
+      );
 
       await client.endSession();
       client.dispose();
@@ -226,9 +280,12 @@ void main() {
 
   group('Happy Path - Mode Changes', () {
     test('detects when agent starts and stops speaking', () async {
+      final transport = FakeConversationTransport();
       final modes = <ConversationMode>[];
 
-      final client = TestableConversationClient(
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
         callbacks: ConversationCallbacks(
           onModeChange: ({required mode}) {
             modes.add(mode);
@@ -242,15 +299,15 @@ void main() {
       expect(client.isSpeaking, false);
 
       // Agent starts speaking
-      client.simulateAgentSpeaking();
-      await Future.delayed(const Duration(milliseconds: 10));
+      transport.emitSpeaking(true);
+      await pump();
 
       expect(modes, contains(ConversationMode.speaking));
       expect(client.isSpeaking, true);
 
       // Agent stops speaking
-      client.simulateAgentStoppedSpeaking();
-      await Future.delayed(const Duration(milliseconds: 10));
+      transport.emitSpeaking(false);
+      await pump();
 
       expect(modes, contains(ConversationMode.listening));
       expect(client.isSpeaking, false);
@@ -262,7 +319,10 @@ void main() {
 
   group('Happy Path - Audio Controls', () {
     test('mutes and unmutes microphone during session', () async {
-      final client = TestableConversationClient();
+      final client = ConversationClient(
+        transport: FakeConversationTransport(),
+        tokenService: FakeTokenService(),
+      );
 
       await client.startSession(agentId: 'test-agent');
 
@@ -290,10 +350,13 @@ void main() {
 
   group('Happy Path - Session Lifecycle', () {
     test('completes full lifecycle: start, interact, end', () async {
+      final transport = FakeConversationTransport();
       final events = <String>[];
       final messages = <String>[];
 
-      final client = TestableConversationClient(
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
         callbacks: ConversationCallbacks(
           onStatusChange: ({required status}) {
             events.add('status:${status.name}');
@@ -315,6 +378,8 @@ void main() {
 
       // Start
       await client.startSession(agentId: 'test-agent', userId: 'user-123');
+      emitMetadata(transport);
+      await pump();
 
       expect(events, contains('status:connecting'));
       expect(events, contains('status:connected'));
@@ -322,24 +387,35 @@ void main() {
 
       // Interact
       client.sendUserMessage('Hello');
-      expect(messages, contains('user:Hello'));
+      await pump();
+      expect(
+        transport.sentMessages,
+        contains(equals({'type': 'user_message', 'text': 'Hello'})),
+      );
 
-      client.simulateAgentSpeaking();
-      await Future.delayed(const Duration(milliseconds: 10));
+      transport.emitSpeaking(true);
+      await pump();
       expect(events, contains('mode:speaking'));
 
-      client.simulateAgentMessage('Hi there!');
+      transport.emitData({
+        'type': 'agent_response',
+        'agent_response_event': {
+          'agent_response': 'Hi there!',
+          'event_id': 1,
+        },
+      });
+      await pump();
       expect(messages, contains('ai:Hi there!'));
 
-      client.simulateAgentStoppedSpeaking();
-      await Future.delayed(const Duration(milliseconds: 10));
+      transport.emitSpeaking(false);
+      await pump();
       expect(events, contains('mode:listening'));
 
       // End
       await client.endSession();
       expect(events, contains('status:disconnecting'));
       expect(events, contains('status:disconnected'));
-      expect(events, contains('disconnect:Session ended by user'));
+      expect(events, contains('disconnect:user'));
       expect(client.status, ConversationStatus.disconnected);
       expect(client.conversationId, null);
 
@@ -349,7 +425,9 @@ void main() {
     test('handles multiple sessions sequentially', () async {
       final statuses = <ConversationStatus>[];
 
-      final client = TestableConversationClient(
+      final client = ConversationClient(
+        transport: FakeConversationTransport(),
+        tokenService: FakeTokenService(),
         callbacks: ConversationCallbacks(
           onStatusChange: ({required status}) {
             statuses.add(status);
@@ -389,9 +467,13 @@ void main() {
 
   group('Happy Path - Listener Notifications', () {
     test('notifies listeners on state changes', () async {
+      final transport = FakeConversationTransport();
       int notifyCount = 0;
 
-      final client = TestableConversationClient();
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
+      );
 
       void listener() {
         notifyCount++;
@@ -411,8 +493,8 @@ void main() {
 
       // Speaking state change triggers notification
       final beforeSpeaking = notifyCount;
-      client.simulateAgentSpeaking();
-      await Future.delayed(const Duration(milliseconds: 10));
+      transport.emitSpeaking(true);
+      await pump();
       expect(notifyCount, greaterThan(beforeSpeaking));
 
       client.removeListener(listener);

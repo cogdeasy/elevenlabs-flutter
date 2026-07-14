@@ -629,6 +629,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         return Colors.green;
       case ConversationStatus.connecting:
         return Colors.orange;
+      case ConversationStatus.reconnecting:
+        return Colors.orange;
       case ConversationStatus.disconnecting:
         return Colors.orange;
       case ConversationStatus.disconnected:

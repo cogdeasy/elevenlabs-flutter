@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-14
+
+### Added
+
+- `ConversationStatus.reconnecting`: `ConversationClient` now subscribes to the transport's `stateStream` and reports connection drops and recoveries of an established session via `onStatusChange` (previously the state subscription was never attached, so reconnects were invisible to consumers).
+- iOS example build job in CI (`build-example-ios`), alongside the existing Android APK build.
+
+### Fixed
+
+- The user-provided `onAgentToolRequest` callback is now forwarded to the message handler and fires on `agent_tool_request` events (previously it was silently dropped).
+
+### Changed
+
+- Legacy mock-based tests (`test/helpers/testable_client.dart`) were migrated to the fake-transport harness introduced in 0.7.0; the tests now exercise the real `ConversationClient`.
+
 ## [0.7.0] - 2026-07-14
 
 ### Added
