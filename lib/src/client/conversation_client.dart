@@ -271,6 +271,7 @@ class ConversationClient extends ChangeNotifier {
 
       _setStatus(ConversationStatus.connected);
     } catch (e) {
+      await _cancelSubscriptions();
       _setStatus(ConversationStatus.disconnected);
       _callbacks?.onError?.call('Failed to start session', e);
       rethrow;
@@ -447,7 +448,7 @@ class ConversationClient extends ChangeNotifier {
     );
   }
 
-  Future<void> _cleanup() async {
+  Future<void> _cancelSubscriptions() async {
     await _stateSubscription?.cancel();
     _stateSubscription = null;
 
@@ -462,6 +463,10 @@ class ConversationClient extends ChangeNotifier {
 
     await _disconnectSubscription?.cancel();
     _disconnectSubscription = null;
+  }
+
+  Future<void> _cleanup() async {
+    await _cancelSubscriptions();
 
     _messageHandler.stopListening();
     await _transport.disconnect();
