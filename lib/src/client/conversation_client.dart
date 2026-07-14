@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'package:livekit_client/livekit_client.dart' as livekit;
 import '../models/conversation_status.dart';
 import '../models/conversation_config.dart';
 import '../models/callbacks.dart';
 import '../tools/client_tools.dart';
+import '../connection/conversation_transport.dart';
 import '../connection/livekit_manager.dart';
 import '../connection/token_service.dart';
 import '../messaging/message_handler.dart';
@@ -15,7 +15,7 @@ import '../utils/overrides.dart';
 class ConversationClient extends ChangeNotifier {
   // Services
   late final TokenService _tokenService;
-  late final LiveKitManager _liveKitManager;
+  late final ConversationTransport _transport;
   late final MessageHandler _messageHandler;
   late final MessageSender _messageSender;
 
@@ -28,13 +28,16 @@ class ConversationClient extends ChangeNotifier {
   // State
   ConversationStatus _status = ConversationStatus.disconnected;
   ConversationMode _mode = ConversationMode.listening;
+  ConversationSessionMode _sessionMode = ConversationSessionMode.voice;
   bool _isSpeaking = false;
   String? _conversationId;
   int _lastFeedbackEventId = 0;
   bool _overridesSent = false;
 
-  StreamSubscription<livekit.ConnectionState>? _stateSubscription;
+  StreamSubscription<TransportConnectionState>? _stateSubscription;
   StreamSubscription<bool>? _speakingSubscription;
+  StreamSubscription<double>? _agentAudioLevelSubscription;
+  StreamSubscription<double>? _userAudioLevelSubscription;
   StreamSubscription<String>? _disconnectSubscription;
 
   /// Current connection status
@@ -43,11 +46,14 @@ class ConversationClient extends ChangeNotifier {
   /// Whether the agent is currently speaking
   bool get isSpeaking => _isSpeaking;
 
+  /// Session mode of the current (or most recent) session
+  ConversationSessionMode get sessionMode => _sessionMode;
+
   /// Current conversation ID
   String? get conversationId => _conversationId;
 
   /// Whether the microphone is muted
-  bool get isMuted => _liveKitManager.isMuted;
+  bool get isMuted => _transport.isMuted;
 
   /// Whether feedback can be sent for the last agent response
   bool get canSendFeedback =>
@@ -55,27 +61,35 @@ class ConversationClient extends ChangeNotifier {
       _status == ConversationStatus.connected;
 
   /// Creates a new conversation client
+  ///
+  /// [transport] and [tokenService] can be injected to replace the default
+  /// LiveKit transport and HTTP token service (e.g. with fakes in tests).
   ConversationClient({
     String? apiEndpoint,
     String? websocketUrl,
     ConversationCallbacks? callbacks,
     Map<String, ClientTool>? clientTools,
+    ConversationTransport? transport,
+    TokenService? tokenService,
   })  : _apiEndpoint = apiEndpoint,
         _websocketUrl = websocketUrl,
         _callbacks = callbacks,
         _clientTools = clientTools {
-    _initializeServices();
+    _initializeServices(transport, tokenService);
   }
 
-  void _initializeServices() {
-    _tokenService = TokenService(apiEndpoint: _apiEndpoint);
-    _liveKitManager = LiveKitManager();
+  void _initializeServices(
+    ConversationTransport? transport,
+    TokenService? tokenService,
+  ) {
+    _tokenService = tokenService ?? TokenService(apiEndpoint: _apiEndpoint);
+    _transport = transport ?? LiveKitManager();
     _messageHandler = MessageHandler(
       callbacks: _enhancedCallbacks,
-      liveKit: _liveKitManager,
+      transport: _transport,
       clientTools: _clientTools,
     );
-    _messageSender = MessageSender(_liveKitManager);
+    _messageSender = MessageSender(_transport);
   }
 
   /// Enhanced callbacks that include internal state management
@@ -126,6 +140,13 @@ class ConversationClient extends ChangeNotifier {
   /// Either [agentId] or [conversationToken] must be provided:
   /// - Use [agentId] for public agents (token will be fetched automatically)
   /// - Use [conversationToken] for private agents (token from your backend)
+  ///
+  /// [sessionMode] controls how the local user participates:
+  /// - [ConversationSessionMode.voice] (default): full voice conversation
+  /// - [ConversationSessionMode.listenOnly]: agent audio plays but the
+  ///   microphone is never published
+  /// - [ConversationSessionMode.textOnly]: pure text chat; the microphone is
+  ///   never published and the `text_only` conversation override is sent
   Future<void> startSession({
     String? agentId,
     String? conversationToken,
@@ -134,6 +155,7 @@ class ConversationClient extends ChangeNotifier {
     ConversationOverrides? overrides,
     Map<String, dynamic>? customLlmExtraBody,
     Map<String, dynamic>? dynamicVariables,
+    ConversationSessionMode sessionMode = ConversationSessionMode.voice,
   }) async {
     if (_status != ConversationStatus.disconnected) {
       throw StateError('Session already active');
@@ -148,6 +170,7 @@ class ConversationClient extends ChangeNotifier {
     try {
       // Ensure clean state (important for hot-reload and multiple sessions)
       _overridesSent = false;
+      _sessionMode = sessionMode;
 
       _setStatus(ConversationStatus.connecting);
 
@@ -174,13 +197,12 @@ class ConversationClient extends ChangeNotifier {
       wsUrl = _websocketUrl ?? 'wss://livekit.rtc.elevenlabs.io';
 
       // Listen to disconnect events with reasons
-      _disconnectSubscription =
-          _liveKitManager.disconnectStream.listen((reason) {
+      _disconnectSubscription = _transport.disconnectStream.listen((reason) {
         _handleDisconnection(reason);
       });
 
-      // Listen to agent speaking state from LiveKit
-      _speakingSubscription = _liveKitManager.speakingStateStream.listen((
+      // Listen to agent speaking state from the transport
+      _speakingSubscription = _transport.speakingStateStream.listen((
         isSpeaking,
       ) {
         _mode =
@@ -188,6 +210,18 @@ class ConversationClient extends ChangeNotifier {
         _isSpeaking = isSpeaking;
         notifyListeners();
         _callbacks?.onModeChange?.call(mode: _mode);
+      });
+
+      // Listen to agent audio level (0-1) for real-time visualizations
+      _agentAudioLevelSubscription =
+          _transport.agentAudioLevelStream.listen((level) {
+        _callbacks?.onAgentAudioLevel?.call(audioLevel: level);
+      });
+
+      // Listen to local user audio level (0-1) for user visualizations
+      _userAudioLevelSubscription =
+          _transport.userAudioLevelStream.listen((level) {
+        _callbacks?.onUserAudioLevel?.call(audioLevel: level);
       });
 
       // Start message handling
@@ -200,10 +234,16 @@ class ConversationClient extends ChangeNotifier {
       // unhandled async error. The real failure is reported via connect()'s
       // throw and the disconnect handler.
       final roomReadyFuture =
-          _liveKitManager.roomReadyStream.first.catchError((Object _) {});
+          _transport.roomReadyStream.first.catchError((Object _) {});
 
-      // Connect to LiveKit (will emit roomReady event when done)
-      await _liveKitManager.connect(wsUrl, token);
+      // Connect to the transport (will emit roomReady event when done).
+      // In text-only and listen-only sessions no local audio publisher is
+      // created, so no microphone permission is requested.
+      await _transport.connect(
+        wsUrl,
+        token,
+        enableMicrophone: sessionMode == ConversationSessionMode.voice,
+      );
 
       // Wait for room to be fully ready and send overrides
       await roomReadyFuture;
@@ -286,8 +326,9 @@ class ConversationClient extends ChangeNotifier {
 
   /// Sets the microphone mute state
   Future<void> setMicMuted(bool muted) async {
+    if (!_ensureMicrophoneAvailable()) return;
     try {
-      await _liveKitManager.setMicMuted(muted);
+      await _transport.setMicMuted(muted);
       notifyListeners();
     } catch (e) {
       _callbacks?.onError?.call('Failed to set mic mute state', e);
@@ -296,12 +337,25 @@ class ConversationClient extends ChangeNotifier {
 
   /// Toggles the microphone mute state
   Future<void> toggleMute() async {
+    if (!_ensureMicrophoneAvailable()) return;
     try {
-      await _liveKitManager.toggleMute();
+      await _transport.toggleMute();
       notifyListeners();
     } catch (e) {
       _callbacks?.onError?.call('Failed to toggle mute', e);
     }
+  }
+
+  bool _ensureMicrophoneAvailable() {
+    if (_status != ConversationStatus.disconnected &&
+        _sessionMode != ConversationSessionMode.voice) {
+      _callbacks?.onError?.call(
+        'Microphone is not available in ${_sessionMode.name} sessions',
+        null,
+      );
+      return false;
+    }
+    return true;
   }
 
   void _setStatus(ConversationStatus newStatus) {
@@ -340,7 +394,7 @@ class ConversationClient extends ChangeNotifier {
 
     final config = ConversationConfig(
       userId: userId,
-      overrides: overrides,
+      overrides: _applySessionModeOverrides(overrides),
       customLlmExtraBody: customLlmExtraBody,
       dynamicVariables: dynamicVariables,
     );
@@ -348,12 +402,34 @@ class ConversationClient extends ChangeNotifier {
     final overridesMessage = constructOverrides(config);
 
     try {
-      await _liveKitManager.sendMessage(overridesMessage);
+      await _transport.sendMessage(overridesMessage);
     } catch (e) {
       _overridesSent = false; // Reset flag on error so retry is possible
       _callbacks?.onError?.call('Failed to send overrides', e);
       rethrow;
     }
+  }
+
+  /// Injects the `text_only` conversation override for text-only sessions,
+  /// preserving any overrides provided by the caller.
+  ConversationOverrides? _applySessionModeOverrides(
+    ConversationOverrides? overrides,
+  ) {
+    if (_sessionMode != ConversationSessionMode.textOnly) {
+      return overrides;
+    }
+
+    final conversation = overrides?.conversation;
+    return ConversationOverrides(
+      agent: overrides?.agent,
+      tts: overrides?.tts,
+      client: overrides?.client,
+      conversation: ConversationSettingsOverrides(
+        maxDurationSeconds: conversation?.maxDurationSeconds,
+        turnTimeoutSeconds: conversation?.turnTimeoutSeconds,
+        textOnly: true,
+      ),
+    );
   }
 
   Future<void> _cleanup() async {
@@ -363,11 +439,17 @@ class ConversationClient extends ChangeNotifier {
     await _speakingSubscription?.cancel();
     _speakingSubscription = null;
 
+    await _agentAudioLevelSubscription?.cancel();
+    _agentAudioLevelSubscription = null;
+
+    await _userAudioLevelSubscription?.cancel();
+    _userAudioLevelSubscription = null;
+
     await _disconnectSubscription?.cancel();
     _disconnectSubscription = null;
 
     _messageHandler.stopListening();
-    await _liveKitManager.disconnect();
+    await _transport.disconnect();
 
     _conversationId = null;
     _lastFeedbackEventId = 0;
@@ -378,7 +460,7 @@ class ConversationClient extends ChangeNotifier {
   void dispose() {
     _cleanup();
     _messageHandler.dispose();
-    _liveKitManager.dispose().ignore();
+    _transport.dispose().ignore();
     super.dispose();
   }
 }

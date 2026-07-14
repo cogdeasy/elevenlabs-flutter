@@ -7,6 +7,10 @@ library;
 // Main client
 export 'src/client/conversation_client.dart';
 
+// Connection
+export 'src/connection/conversation_transport.dart';
+export 'src/connection/token_service.dart';
+
 // Models
 export 'src/models/conversation_status.dart';
 export 'src/models/conversation_config.dart';

@@ -3,13 +3,13 @@ import 'dart:convert';
 import '../models/callbacks.dart';
 import '../models/conversation_status.dart';
 import '../models/events.dart';
-import '../connection/livekit_manager.dart';
+import '../connection/conversation_transport.dart';
 import '../tools/client_tools.dart';
 
 /// Handles incoming messages from the LiveKit data channel
 class MessageHandler {
   final ConversationCallbacks callbacks;
-  final LiveKitManager liveKit;
+  final ConversationTransport transport;
   final Map<String, ClientTool>? clientTools;
 
   StreamSubscription<Map<String, dynamic>>? _dataSubscription;
@@ -21,13 +21,13 @@ class MessageHandler {
 
   MessageHandler({
     required this.callbacks,
-    required this.liveKit,
+    required this.transport,
     this.clientTools,
   });
 
   /// Starts listening to data messages
   void startListening() {
-    _dataSubscription = liveKit.dataStream.listen(
+    _dataSubscription = transport.dataStream.listen(
       _processIncomingMessage,
       onError: (error) {
         callbacks.onError?.call('Data stream error', error);
@@ -210,7 +210,7 @@ class MessageHandler {
     final eventId = pingEvent?['event_id'];
 
     if (eventId != null) {
-      liveKit.sendMessage({'type': 'pong', 'event_id': eventId});
+      transport.sendMessage({'type': 'pong', 'event_id': eventId});
     }
   }
 
@@ -247,7 +247,7 @@ class MessageHandler {
     } else {
       resultData = result.error ?? 'Unknown error';
     }
-    await liveKit.sendMessage({
+    await transport.sendMessage({
       'type': 'client_tool_result',
       'tool_call_id': toolCallId,
       'result': resultData,
