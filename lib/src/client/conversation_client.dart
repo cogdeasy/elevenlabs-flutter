@@ -272,6 +272,7 @@ class ConversationClient extends ChangeNotifier {
       _setStatus(ConversationStatus.connected);
     } catch (e) {
       await _cancelSubscriptions();
+      _messageHandler.stopListening();
       _setStatus(ConversationStatus.disconnected);
       _callbacks?.onError?.call('Failed to start session', e);
       rethrow;
