@@ -144,6 +144,9 @@ jobs:
       - name: Create .env for example
         run: touch example/.env
 
+      - name: Update CocoaPods specs repo
+        run: pod repo update
+
       - name: Build example app (iOS, no codesign)
         working-directory: example
         run: |
