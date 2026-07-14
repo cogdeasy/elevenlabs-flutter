@@ -127,3 +127,26 @@ jobs:
         run: |
           flutter pub get
           flutter build apk --debug
+
+  build-example-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Create .env for example
+        run: touch example/.env
+
+      - name: Build example app (iOS, no codesign)
+        working-directory: example
+        run: |
+          flutter pub get
+          flutter build ios --debug --no-codesign

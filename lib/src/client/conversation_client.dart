@@ -121,6 +121,7 @@ class ConversationClient extends ChangeNotifier {
       onUnhandledClientToolCall: callbacks?.onUnhandledClientToolCall,
       onMcpToolCall: callbacks?.onMcpToolCall,
       onMcpConnectionStatus: callbacks?.onMcpConnectionStatus,
+      onAgentToolRequest: callbacks?.onAgentToolRequest,
       onAgentToolResponse: callbacks?.onAgentToolResponse,
       onDebug: callbacks?.onDebug,
       onEndCallRequested: () {
@@ -199,6 +200,20 @@ class ConversationClient extends ChangeNotifier {
       // Listen to disconnect events with reasons
       _disconnectSubscription = _transport.disconnectStream.listen((reason) {
         _handleDisconnection(reason);
+      });
+
+      // Listen to transport connection state for reconnect reporting.
+      // Initial connect/disconnect status is driven by startSession/endSession
+      // and the disconnect stream; this only reports drops and recoveries of
+      // an established session.
+      _stateSubscription = _transport.stateStream.listen((state) {
+        if (state == TransportConnectionState.reconnecting &&
+            _status == ConversationStatus.connected) {
+          _setStatus(ConversationStatus.reconnecting);
+        } else if (state == TransportConnectionState.connected &&
+            _status == ConversationStatus.reconnecting) {
+          _setStatus(ConversationStatus.connected);
+        }
       });
 
       // Listen to agent speaking state from the transport

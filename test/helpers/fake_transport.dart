@@ -125,6 +125,9 @@ class FakeConversationTransport implements ConversationTransport {
   /// Injects an incoming protocol event, as if received from the agent
   void emitData(Map<String, dynamic> message) => _dataController.add(message);
 
+  /// Emits a transport connection state change
+  void emitState(TransportConnectionState state) => _stateController.add(state);
+
   /// Emits an agent disconnect event with [reason]
   void emitDisconnect(String reason) => _disconnectController.add(reason);
 

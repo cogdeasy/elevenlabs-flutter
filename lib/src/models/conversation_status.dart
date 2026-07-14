@@ -9,6 +9,9 @@ enum ConversationStatus {
   /// Connected and ready for conversation
   connected,
 
+  /// Connection dropped; the transport is attempting to re-establish it
+  reconnecting,
+
   /// In the process of disconnecting
   disconnecting,
 }

@@ -126,6 +126,89 @@ void main() {
     });
   });
 
+  group('Transport connection state', () {
+    test('reconnecting transport state is reported via status', () async {
+      final transport = FakeConversationTransport();
+      final statuses = <ConversationStatus>[];
+
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
+        callbacks: ConversationCallbacks(
+          onStatusChange: ({required status}) => statuses.add(status),
+        ),
+      );
+
+      await client.startSession(agentId: 'agent-1');
+      expect(client.status, ConversationStatus.connected);
+
+      // Connection drops and the transport starts reconnecting
+      transport.emitState(TransportConnectionState.reconnecting);
+      await pump();
+      expect(client.status, ConversationStatus.reconnecting);
+
+      // Transport recovers
+      transport.emitState(TransportConnectionState.connected);
+      await pump();
+      expect(client.status, ConversationStatus.connected);
+
+      expect(statuses, [
+        ConversationStatus.connecting,
+        ConversationStatus.connected,
+        ConversationStatus.reconnecting,
+        ConversationStatus.connected,
+      ]);
+
+      await client.endSession();
+      client.dispose();
+    });
+
+    test('state events during initial connect do not disturb status', () async {
+      final transport = FakeConversationTransport();
+      final statuses = <ConversationStatus>[];
+
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
+        callbacks: ConversationCallbacks(
+          onStatusChange: ({required status}) => statuses.add(status),
+        ),
+      );
+
+      // connect() emits connecting/connected on the state stream; the
+      // client's own status flow must remain connecting -> connected
+      await client.startSession(agentId: 'agent-1');
+      await pump();
+
+      expect(statuses, [
+        ConversationStatus.connecting,
+        ConversationStatus.connected,
+      ]);
+
+      await client.endSession();
+      client.dispose();
+    });
+
+    test('reconnecting state after disconnect is ignored', () async {
+      final transport = FakeConversationTransport();
+
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
+      );
+
+      await client.startSession(agentId: 'agent-1');
+      await client.endSession();
+      expect(client.status, ConversationStatus.disconnected);
+
+      transport.emitState(TransportConnectionState.reconnecting);
+      await pump();
+      expect(client.status, ConversationStatus.disconnected);
+
+      client.dispose();
+    });
+  });
+
   group('Protocol events', () {
     test('ping is answered with pong carrying the event id', () async {
       final transport = FakeConversationTransport();
@@ -293,6 +376,38 @@ void main() {
       await pump();
 
       expect(unhandled, ['unknown_tool']);
+
+      await client.endSession();
+      client.dispose();
+    });
+
+    test('agent_tool_request fires user-provided onAgentToolRequest', () async {
+      final transport = FakeConversationTransport();
+      final requests = <String>[];
+
+      final client = ConversationClient(
+        transport: transport,
+        tokenService: FakeTokenService(),
+        callbacks: ConversationCallbacks(
+          onAgentToolRequest: ({required toolName, required toolCallId}) {
+            requests.add('$toolName:$toolCallId');
+          },
+        ),
+      );
+
+      await client.startSession(agentId: 'agent-1');
+      transport.emitData({
+        'type': 'agent_tool_request',
+        'agent_tool_request': {
+          'tool_name': 'lookup_weather',
+          'tool_call_id': 'call-9',
+          'tool_type': 'webhook',
+          'parameters': <String, dynamic>{},
+        },
+      });
+      await pump();
+
+      expect(requests, ['lookup_weather:call-9']);
 
       await client.endSession();
       client.dispose();
